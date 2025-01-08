@@ -1,4 +1,4 @@
-.PHONY: all build test clean deploy gas fmt
+.PHONY: all build test clean deploy upgrade gas fmt
 
 # Variables
 BUILD_DIR := out
@@ -21,7 +21,13 @@ deploy:
 ifndef PRIVATE_KEY
 	$(error PRIVATE_KEY is not set. Export it as an environment variable or pass it as an argument.)
 endif
-	forge script script/Deploy.s.sol --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY) --broadcast
+	forge script script/DeployRWA.s.sol --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY) --broadcast
+
+upgrade:
+ifndef PRIVATE_KEY
+	$(error PRIVATE_KEY is not set. Export it as an environment variable or pass it as an argument.)
+endif
+	forge script script/UpgradeRWA.s.sol --rpc-url $(RPC_URL) --private-key $(PRIVATE_KEY) --broadcast
 
 gas:
 	forge test --gas-report
