@@ -325,11 +325,8 @@ contract FractionalRWA is Initializable, ERC1155Upgradeable, AccessControlUpgrad
         uint256 id,
         uint256 amount,
         bytes memory data // onlyKYCVerified(from)
-    )
-        public
-        virtual
-        override // onlyKYCVerified(to)
-    {
+            // onlyKYCVerified(to)
+    ) public virtual override {
         if (assets[id].status == AssetStatus.Fraudulent) {
             revert FraudulentAsset();
         }
@@ -348,11 +345,8 @@ contract FractionalRWA is Initializable, ERC1155Upgradeable, AccessControlUpgrad
         uint256[] memory ids,
         uint256[] memory amounts,
         bytes memory data // onlyKYCVerified(from)
-    )
-        public
-        virtual
-        override // onlyKYCVerified(to)
-    {
+            // onlyKYCVerified(to)
+    ) public virtual override {
         // loop over all ids to check status
         for (uint256 i = 0; i < ids.length; i++) {
             if (assets[ids[i]].status == AssetStatus.Fraudulent) {
