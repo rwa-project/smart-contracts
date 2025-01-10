@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
+import {ERC1155Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC1155/ERC1155Upgradeable.sol";
 import {ERC1155URIStorageUpgradeable} from
     "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155URIStorageUpgradeable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
@@ -324,11 +325,8 @@ contract FractionalRWA is Initializable, ERC1155URIStorageUpgradeable, AccessCon
         uint256 id,
         uint256 amount,
         bytes memory data // onlyKYCVerified(from)
-    )
-        public
-        virtual
-        override // onlyKYCVerified(to)
-    {
+            // onlyKYCVerified(to)
+    ) public virtual override {
         if (assets[id].status == AssetStatus.Fraudulent) {
             revert FraudulentAsset();
         }
@@ -347,11 +345,8 @@ contract FractionalRWA is Initializable, ERC1155URIStorageUpgradeable, AccessCon
         uint256[] memory ids,
         uint256[] memory amounts,
         bytes memory data // onlyKYCVerified(from)
-    )
-        public
-        virtual
-        override // onlyKYCVerified(to)
-    {
+            // onlyKYCVerified(to)
+    ) public virtual override {
         // loop over all ids to check status
         for (uint256 i = 0; i < ids.length; i++) {
             if (assets[ids[i]].status == AssetStatus.Fraudulent) {
@@ -401,7 +396,7 @@ contract FractionalRWA is Initializable, ERC1155URIStorageUpgradeable, AccessCon
         override(AccessControlUpgradeable, ERC1155Upgradeable)
         returns (bool)
     {
-        return interfaceId == type(IAccessControl).interfaceId || super.supportsInterface(interfaceId);
+        return super.supportsInterface(interfaceId);
     }
 
     /* ========== Upgradeable Gap ========== */
