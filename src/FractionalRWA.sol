@@ -6,6 +6,8 @@ import {ERC1155URIStorageUpgradeable} from
     "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155URIStorageUpgradeable.sol";
 import {ERC1155BurnableUpgradeable} from
     "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155BurnableUpgradeable.sol";
+import {ERC1155PausableUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155PausableUpgradeable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
@@ -14,16 +16,18 @@ import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
  * @title FractionalRWA
  * @notice This upgradeable ERC1155 contract represents fractional ownership of real-world assets.
  *         Key features:
- *           - Role-based minting (admin/minter)
- *           - Tracking of max and total shares
- *           - Asset lifecycle states (enum)
- *           - (Optional) KYC verification placeholders
+ *           - Role-based minting (admin/minter) and burning (admin/burner) restrictions
+ *           - Asset status management (certified, in escrow, disputed, fraudulent)
+ *           - Asset metadata management (URI)
+ *           - Tracking of max and total shares minted for each asset
+ *           - Optional KYC verification for asset transfers
  *           - Transparent Upgradeable Proxy compatible
  */
 contract FractionalRWA is
     Initializable,
     ERC1155URIStorageUpgradeable,
     ERC1155BurnableUpgradeable,
+    ERC1155PausableUpgradeable,
     AccessControlUpgradeable
 {
     using Strings for uint256;
@@ -33,6 +37,7 @@ contract FractionalRWA is
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant URI_SETTER_ROLE = keccak256("URI_SETTER_ROLE");
     bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
     /* ========== Asset Status Enum ========== */
     enum AssetStatus {
@@ -123,29 +128,33 @@ contract FractionalRWA is
      *      Must be called once via the proxy after deployment.
      * @param baseURI The base URI for token metadata (e.g., "ipfs://..." or "ar://...").
      * @param admin The address that will receive ADMIN_ROLE.
-     * @param minter The address that will receive MINTER_ROLE.
      */
-    function initialize(string memory baseURI, address admin, address minter) public initializer {
+    function initialize(string memory baseURI, address admin) public initializer {
         __ERC1155_init(baseURI);
         __AccessControl_init();
         __ERC1155URIStorage_init();
         __ERC1155Burnable_init();
+        __ERC1155Pausable_init();
 
         _setBaseURI(baseURI);
 
         // Set up roles
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(ADMIN_ROLE, admin);
-        _grantRole(MINTER_ROLE, minter);
+        _grantRole(MINTER_ROLE, admin);
         _grantRole(URI_SETTER_ROLE, admin);
         _grantRole(BURNER_ROLE, admin);
+        _grantRole(PAUSER_ROLE, admin);
 
         // Optionally, you might also give ADMIN_ROLE to msg.sender
         // if you're deploying via a script/tool:
-        _grantRole(ADMIN_ROLE, msg.sender);
+        _grantRole(ADMIN_ROLE, _msgSender());
 
-        // Make ADMIN_ROLE the admin of MINTER_ROLE
+        // Make ADMIN_ROLE the admin of each role
         _setRoleAdmin(MINTER_ROLE, ADMIN_ROLE);
+        _setRoleAdmin(URI_SETTER_ROLE, ADMIN_ROLE);
+        _setRoleAdmin(BURNER_ROLE, ADMIN_ROLE);
+        _setRoleAdmin(PAUSER_ROLE, ADMIN_ROLE);
 
         // Initialize the token index
         _currentTokenId = 1;
@@ -176,6 +185,7 @@ contract FractionalRWA is
     function mintAsset(address to, uint256 amount, string calldata metadataURI, uint256 maxSharesCap)
         external
         onlyRole(MINTER_ROLE)
+        whenNotPaused
     {
         if (bytes(metadataURI).length == 0) {
             revert InvalidMetadataURI(metadataURI);
@@ -211,7 +221,11 @@ contract FractionalRWA is
      * @param to Recipient of newly minted shares.
      * @param amount Number of shares to mint.
      */
-    function mintAdditionalShares(uint256 tokenId, address to, uint256 amount) external onlyRole(MINTER_ROLE) {
+    function mintAdditionalShares(uint256 tokenId, address to, uint256 amount)
+        external
+        onlyRole(MINTER_ROLE)
+        whenNotPaused
+    {
         if (_maxShares[tokenId] == 0) {
             revert AssetNotFound(tokenId);
         }
@@ -234,7 +248,7 @@ contract FractionalRWA is
      * @param id The asset's token ID.
      * @param value Number of shares to burn.
      */
-    function burn(address account, uint256 id, uint256 value) public override {
+    function burn(address account, uint256 id, uint256 value) public override whenNotPaused {
         bool isAuthorized =
             hasRole(BURNER_ROLE, _msgSender()) || account == _msgSender() || isApprovedForAll(account, _msgSender());
 
@@ -260,7 +274,7 @@ contract FractionalRWA is
      * @param ids The asset's token IDs.
      * @param values Number of shares to burn for each asset.
      */
-    function burnBatch(address account, uint256[] memory ids, uint256[] memory values) public override {
+    function burnBatch(address account, uint256[] memory ids, uint256[] memory values) public override whenNotPaused {
         bool isAuthorized =
             hasRole(BURNER_ROLE, _msgSender()) || account == _msgSender() || isApprovedForAll(account, _msgSender());
 
@@ -290,13 +304,17 @@ contract FractionalRWA is
      * @notice Change the base URI for metadata. Only admin can do this.
      * @param newBaseURI New base URI.
      */
-    function setBaseURI(string memory newBaseURI) external onlyRole(URI_SETTER_ROLE) {
+    function setBaseURI(string memory newBaseURI) external onlyRole(URI_SETTER_ROLE) whenNotPaused {
         _setBaseURI(newBaseURI);
 
         emit BaseURIUpdated(newBaseURI);
     }
 
-    function updateMetadataURI(uint256 tokenId, string calldata newURI) external onlyRole(URI_SETTER_ROLE) {
+    function updateMetadataURI(uint256 tokenId, string calldata newURI)
+        external
+        onlyRole(URI_SETTER_ROLE)
+        whenNotPaused
+    {
         if (_maxShares[tokenId] == 0) {
             revert AssetNotFound(tokenId);
         }
@@ -315,7 +333,7 @@ contract FractionalRWA is
      *
      * Emits an {AssetStatusUpdated} event.
      */
-    function updateAssetStatus(uint256 tokenId, AssetStatus newStatus) external onlyRole(ADMIN_ROLE) {
+    function updateAssetStatus(uint256 tokenId, AssetStatus newStatus) external onlyRole(ADMIN_ROLE) whenNotPaused {
         if (_maxShares[tokenId] == 0) {
             revert AssetNotFound(tokenId);
         }
@@ -363,7 +381,7 @@ contract FractionalRWA is
     /**
      * @notice Mark a user's KYC as verified.
      */
-    function verifyKYC(address account) external onlyRole(ADMIN_ROLE) {
+    function verifyKYC(address account) external onlyRole(ADMIN_ROLE) whenNotPaused {
         _kycVerified[account] = true;
         emit KYCVerified(account);
     }
@@ -371,7 +389,7 @@ contract FractionalRWA is
     /**
      * @notice Revoke KYC status of a user.
      */
-    function revokeKYC(address account) external onlyRole(ADMIN_ROLE) {
+    function revokeKYC(address account) external onlyRole(ADMIN_ROLE) whenNotPaused {
         _kycVerified[account] = false;
         emit KYCRevoked(account);
     }
@@ -397,7 +415,8 @@ contract FractionalRWA is
     )
         public
         virtual
-        override // onlyKYCVerified(to)
+        override
+        whenNotPaused // onlyKYCVerified(to)
     {
         if (assets[id].status == AssetStatus.Fraudulent) {
             revert FraudulentAsset();
@@ -420,7 +439,9 @@ contract FractionalRWA is
     )
         public
         virtual
-        override // onlyKYCVerified(to)
+        override
+        // onlyKYCVerified(to)
+        whenNotPaused
     {
         // loop over all ids to check status
         for (uint256 i = 0; i < ids.length; i++) {
@@ -437,6 +458,22 @@ contract FractionalRWA is
         for (uint256 i = 0; i < ids.length; i++) {
             emit AssetTransferred(ids[i], from, to, amounts[i]);
         }
+    }
+
+    /* ========== Pausable Functions ========== */
+
+    /**
+     * @notice Pause all transfers of assets.
+     */
+    function pause() external onlyRole(PAUSER_ROLE) {
+        _pause();
+    }
+
+    /**
+     * @notice Unpause all transfers of assets.
+     */
+    function unpause() external onlyRole(PAUSER_ROLE) {
+        _unpause();
     }
 
     /* ========== View Functions ========== */
@@ -482,6 +519,13 @@ contract FractionalRWA is
         returns (string memory)
     {
         return super.uri(tokenId);
+    }
+
+    function _update(address from, address to, uint256[] memory ids, uint256[] memory values)
+        internal
+        override(ERC1155Upgradeable, ERC1155PausableUpgradeable)
+    {
+        super._update(from, to, ids, values);
     }
 
     /* ========== Upgradeable Gap ========== */
