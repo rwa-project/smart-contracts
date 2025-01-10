@@ -4,6 +4,8 @@ pragma solidity ^0.8.22;
 import {ERC1155Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC1155/ERC1155Upgradeable.sol";
 import {ERC1155URIStorageUpgradeable} from
     "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155URIStorageUpgradeable.sol";
+import {ERC1155BurnableUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155BurnableUpgradeable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
@@ -18,13 +20,19 @@ import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
  *           - (Optional) KYC verification placeholders
  *           - Transparent Upgradeable Proxy compatible
  */
-contract FractionalRWA is Initializable, ERC1155URIStorageUpgradeable, AccessControlUpgradeable {
+contract FractionalRWA is
+    Initializable,
+    ERC1155URIStorageUpgradeable,
+    ERC1155BurnableUpgradeable,
+    AccessControlUpgradeable
+{
     using Strings for uint256;
 
     /* ========== Roles ========== */
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant URI_SETTER_ROLE = keccak256("URI_SETTER_ROLE");
+    bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
 
     /* ========== Asset Status Enum ========== */
     enum AssetStatus {
@@ -90,6 +98,7 @@ contract FractionalRWA is Initializable, ERC1155URIStorageUpgradeable, AccessCon
     error FraudulentAsset();
     error TransferNotAllowed(string message, AssetStatus status);
     error NotKYCVerified(address account);
+    error BurnerRoleRequired(string message);
 
     /* ========== Modifiers ========== */
 
@@ -120,6 +129,7 @@ contract FractionalRWA is Initializable, ERC1155URIStorageUpgradeable, AccessCon
         __ERC1155_init(baseURI);
         __AccessControl_init();
         __ERC1155URIStorage_init();
+        __ERC1155Burnable_init();
 
         _setBaseURI(baseURI);
 
@@ -128,6 +138,7 @@ contract FractionalRWA is Initializable, ERC1155URIStorageUpgradeable, AccessCon
         _grantRole(ADMIN_ROLE, admin);
         _grantRole(MINTER_ROLE, minter);
         _grantRole(URI_SETTER_ROLE, admin);
+        _grantRole(BURNER_ROLE, admin);
 
         // Optionally, you might also give ADMIN_ROLE to msg.sender
         // if you're deploying via a script/tool:
@@ -215,6 +226,64 @@ contract FractionalRWA is Initializable, ERC1155URIStorageUpgradeable, AccessCon
         _mint(to, tokenId, amount, "");
 
         emit AssetMinted(tokenId, msg.sender, amount, uri(tokenId));
+    }
+
+    /**
+     * @notice Burn shares of an asset.
+     * @param account The owner of the shares to burn.
+     * @param id The asset's token ID.
+     * @param value Number of shares to burn.
+     */
+    function burn(address account, uint256 id, uint256 value) public override {
+        bool isAuthorized =
+            hasRole(BURNER_ROLE, _msgSender()) || account == _msgSender() || isApprovedForAll(account, _msgSender());
+
+        if (!isAuthorized) {
+            revert BurnerRoleRequired("Caller must have BURNER_ROLE or be owner/approved for all");
+        }
+        if (_maxShares[id] == 0) {
+            revert AssetNotFound(id);
+        }
+        if (assets[id].status == AssetStatus.Fraudulent) {
+            revert FraudulentAsset();
+        }
+
+        _totalShares[id] -= value;
+        super.burn(account, id, value);
+
+        emit AssetBurned(id, account);
+    }
+
+    /**
+     * @notice Burn shares of multiple assets.
+     * @param account The owner of the shares to burn.
+     * @param ids The asset's token IDs.
+     * @param values Number of shares to burn for each asset.
+     */
+    function burnBatch(address account, uint256[] memory ids, uint256[] memory values) public override {
+        bool isAuthorized =
+            hasRole(BURNER_ROLE, _msgSender()) || account == _msgSender() || isApprovedForAll(account, _msgSender());
+
+        if (!isAuthorized) {
+            revert BurnerRoleRequired("Caller must have BURNER_ROLE or be owner/approved for all");
+        }
+
+        for (uint256 i = 0; i < ids.length; i++) {
+            if (_maxShares[ids[i]] == 0) {
+                revert AssetNotFound(ids[i]);
+            }
+            if (assets[ids[i]].status == AssetStatus.Fraudulent) {
+                revert FraudulentAsset();
+            }
+
+            _totalShares[ids[i]] -= values[i];
+        }
+
+        super.burnBatch(account, ids, values);
+
+        for (uint256 i = 0; i < ids.length; i++) {
+            emit AssetBurned(ids[i], account);
+        }
     }
 
     /**
@@ -325,8 +394,11 @@ contract FractionalRWA is Initializable, ERC1155URIStorageUpgradeable, AccessCon
         uint256 id,
         uint256 amount,
         bytes memory data // onlyKYCVerified(from)
-            // onlyKYCVerified(to)
-    ) public virtual override {
+    )
+        public
+        virtual
+        override // onlyKYCVerified(to)
+    {
         if (assets[id].status == AssetStatus.Fraudulent) {
             revert FraudulentAsset();
         }
@@ -345,8 +417,11 @@ contract FractionalRWA is Initializable, ERC1155URIStorageUpgradeable, AccessCon
         uint256[] memory ids,
         uint256[] memory amounts,
         bytes memory data // onlyKYCVerified(from)
-            // onlyKYCVerified(to)
-    ) public virtual override {
+    )
+        public
+        virtual
+        override // onlyKYCVerified(to)
+    {
         // loop over all ids to check status
         for (uint256 i = 0; i < ids.length; i++) {
             if (assets[ids[i]].status == AssetStatus.Fraudulent) {
@@ -397,6 +472,16 @@ contract FractionalRWA is Initializable, ERC1155URIStorageUpgradeable, AccessCon
         returns (bool)
     {
         return super.supportsInterface(interfaceId);
+    }
+
+    function uri(uint256 tokenId)
+        public
+        view
+        virtual
+        override(ERC1155Upgradeable, ERC1155URIStorageUpgradeable)
+        returns (string memory)
+    {
+        return super.uri(tokenId);
     }
 
     /* ========== Upgradeable Gap ========== */
