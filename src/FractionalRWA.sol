@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC1155/ERC1155Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {ERC1155URIStorageUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/token/ERC1155/extensions/ERC1155URIStorageUpgradeable.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 
 /**
@@ -16,12 +17,13 @@ import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
  *           - (Optional) KYC verification placeholders
  *           - Transparent Upgradeable Proxy compatible
  */
-contract FractionalRWA is Initializable, ERC1155Upgradeable, AccessControlUpgradeable {
+contract FractionalRWA is Initializable, ERC1155URIStorageUpgradeable, AccessControlUpgradeable {
     using Strings for uint256;
 
     /* ========== Roles ========== */
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    bytes32 public constant URI_SETTER_ROLE = keccak256("URI_SETTER_ROLE");
 
     /* ========== Asset Status Enum ========== */
     enum AssetStatus {
@@ -36,10 +38,9 @@ contract FractionalRWA is Initializable, ERC1155Upgradeable, AccessControlUpgrad
     /* ========== State Variables ========== */
     struct Asset {
         AssetStatus status;
-        string metadataURI; // IPFS/Arweave URI
     }
 
-    // For each asset (tokenId), track its status in the lifecycle and metadata URI
+    // For each asset (tokenId), track its status in the lifecycle
     mapping(uint256 => Asset) public assets;
 
     // mapping for valid status transitions
@@ -117,10 +118,15 @@ contract FractionalRWA is Initializable, ERC1155Upgradeable, AccessControlUpgrad
     function initialize(string memory baseURI, address admin, address minter) public initializer {
         __ERC1155_init(baseURI);
         __AccessControl_init();
+        __ERC1155URIStorage_init();
+
+        _setBaseURI(baseURI);
 
         // Set up roles
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(ADMIN_ROLE, admin);
         _grantRole(MINTER_ROLE, minter);
+        _grantRole(URI_SETTER_ROLE, admin);
 
         // Optionally, you might also give ADMIN_ROLE to msg.sender
         // if you're deploying via a script/tool:
@@ -177,7 +183,9 @@ contract FractionalRWA is Initializable, ERC1155Upgradeable, AccessControlUpgrad
         _totalShares[newTokenId] = amount;
 
         // Set initial asset status (e.g. Pending)
-        assets[newTokenId] = Asset(AssetStatus.Pending, metadataURI);
+        assets[newTokenId] = Asset(AssetStatus.Pending);
+
+        _setURI(newTokenId, metadataURI);
 
         // Mint fractional shares to 'to'
         _mint(to, newTokenId, amount, "");
@@ -205,34 +213,25 @@ contract FractionalRWA is Initializable, ERC1155Upgradeable, AccessControlUpgrad
         _totalShares[tokenId] += amount;
         _mint(to, tokenId, amount, "");
 
-        emit AssetMinted(tokenId, msg.sender, amount, assets[tokenId].metadataURI);
+        emit AssetMinted(tokenId, msg.sender, amount, uri(tokenId));
     }
 
     /**
      * @notice Change the base URI for metadata. Only admin can do this.
      * @param newBaseURI New base URI.
      */
-    function setBaseURI(string memory newBaseURI) external onlyRole(ADMIN_ROLE) {
-        _setURI(newBaseURI);
+    function setBaseURI(string memory newBaseURI) external onlyRole(URI_SETTER_ROLE) {
+        _setBaseURI(newBaseURI);
 
         emit BaseURIUpdated(newBaseURI);
     }
 
-    /**
-     * @notice Returns the metadata URI for a given tokenId.
-     * @dev By default, appends `/{tokenId}.json` to the base URI. Adjust as needed.
-     */
-    function uri(uint256 tokenId) public view virtual override returns (string memory) {
-        // If not set, fallback to a baseURI + tokenId, or revert
-        if (bytes(assets[tokenId].metadataURI).length == 0) {
-            return string(abi.encodePacked(super.uri(tokenId), tokenId.toString(), ".json"));
+    function updateMetadataURI(uint256 tokenId, string calldata newURI) external onlyRole(URI_SETTER_ROLE) {
+        if (_maxShares[tokenId] == 0) {
+            revert AssetNotFound(tokenId);
         }
 
-        return assets[tokenId].metadataURI;
-    }
-
-    function updateMetadataURI(uint256 tokenId, string calldata newURI) external onlyRole(ADMIN_ROLE) {
-        assets[tokenId].metadataURI = newURI;
+        _setURI(tokenId, newURI);
 
         emit AssetMetadataURIUpdated(tokenId, newURI);
     }
@@ -286,7 +285,7 @@ contract FractionalRWA is Initializable, ERC1155Upgradeable, AccessControlUpgrad
      * @return Metadata URI.
      */
     function getMetadataURI(uint256 tokenId) external view returns (string memory) {
-        return assets[tokenId].metadataURI;
+        return uri(tokenId);
     }
 
     /* ========== KYC Functions (Optional) ========== */
@@ -325,8 +324,11 @@ contract FractionalRWA is Initializable, ERC1155Upgradeable, AccessControlUpgrad
         uint256 id,
         uint256 amount,
         bytes memory data // onlyKYCVerified(from)
-            // onlyKYCVerified(to)
-    ) public virtual override {
+    )
+        public
+        virtual
+        override // onlyKYCVerified(to)
+    {
         if (assets[id].status == AssetStatus.Fraudulent) {
             revert FraudulentAsset();
         }
@@ -345,8 +347,11 @@ contract FractionalRWA is Initializable, ERC1155Upgradeable, AccessControlUpgrad
         uint256[] memory ids,
         uint256[] memory amounts,
         bytes memory data // onlyKYCVerified(from)
-            // onlyKYCVerified(to)
-    ) public virtual override {
+    )
+        public
+        virtual
+        override // onlyKYCVerified(to)
+    {
         // loop over all ids to check status
         for (uint256 i = 0; i < ids.length; i++) {
             if (assets[ids[i]].status == AssetStatus.Fraudulent) {
