@@ -21,6 +21,7 @@ import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
  *           - Asset metadata management (URI)
  *           - Tracking of max and total shares minted for each asset
  *           - Optional KYC verification for asset transfers
+ *            - Pausable transfers
  *           - Transparent Upgradeable Proxy compatible
  */
 contract FractionalRWA is
@@ -360,22 +361,6 @@ contract FractionalRWA is
         emit AssetStatusUpdated(tokenId, newStatus);
     }
 
-    /**
-     * @notice Get the current status of an asset token.
-     */
-    function getAssetStatus(uint256 tokenId) external view returns (AssetStatus) {
-        return assets[tokenId].status;
-    }
-
-    /**
-     * @dev Retrieves the metadata URI for a specific token.
-     * @param tokenId Token ID of the asset.
-     * @return Metadata URI.
-     */
-    function getMetadataURI(uint256 tokenId) external view returns (string memory) {
-        return uri(tokenId);
-    }
-
     /* ========== KYC Functions (Optional) ========== */
 
     /**
@@ -497,6 +482,22 @@ contract FractionalRWA is
      */
     function getCurrentTokenId() external view returns (uint256) {
         return _currentTokenId;
+    }
+
+    /**
+     * @notice Get the current status of an asset token.
+     */
+    function getAssetStatus(uint256 tokenId) external view returns (AssetStatus) {
+        return assets[tokenId].status;
+    }
+
+    /**
+     * @dev Retrieves the metadata URI for a specific token.
+     * @param tokenId Token ID of the asset.
+     * @return Metadata URI.
+     */
+    function getMetadataURI(uint256 tokenId) external view returns (string memory) {
+        return uri(tokenId);
     }
 
     /* ========== Required Overrides ========== */
