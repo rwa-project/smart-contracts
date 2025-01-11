@@ -53,6 +53,10 @@ contract FractionalRWA is
     /* ========== State Variables ========== */
     struct Asset {
         AssetStatus status;
+        uint256 maxShares; // the maximum shares that can ever be minted for this asset
+        uint256 totalShares; // the total shares currently minted for this asset
+        address dao; // address of the DAO that manages the asset
+        address[] certifiers; // list of addresses that have certified the asset
     }
 
     // For each asset (tokenId), track its status in the lifecycle
@@ -66,12 +70,6 @@ contract FractionalRWA is
 
     // Keeps track of the current token ID for newly minted assets
     uint256 private _currentTokenId;
-
-    // For each tokenId (asset), store the maximum shares that can ever be minted
-    mapping(uint256 => uint256) private _maxShares;
-
-    // For each tokenId, store total shares currently minted (sum of all balances)
-    mapping(uint256 => uint256) private _totalShares;
 
     /* ========== Events ========== */
     event AssetMinted(uint256 indexed tokenId, address indexed owner, uint256 indexed amountMinted, string metadataURI);
@@ -201,13 +199,16 @@ contract FractionalRWA is
         uint256 newTokenId = _currentTokenId;
         _currentTokenId++;
 
-        // Initialize share tracking
-        _maxShares[newTokenId] = maxSharesCap;
-        _totalShares[newTokenId] = amount;
+        // Set initial asset status (e.g. Pending) and share tracking
+        assets[newTokenId] = Asset(
+            AssetStatus.Pending, // status
+            maxSharesCap, // maxShares
+            amount, // totalShares
+            address(0), // DAO address
+            new address[](0) // certifiers
+        );
 
-        // Set initial asset status (e.g. Pending)
-        assets[newTokenId] = Asset(AssetStatus.Pending);
-
+        // set metadata URI
         _setURI(newTokenId, metadataURI);
 
         // Mint fractional shares to 'to'
@@ -227,20 +228,20 @@ contract FractionalRWA is
         onlyRole(MINTER_ROLE)
         whenNotPaused
     {
-        if (_maxShares[tokenId] == 0) {
+        if (assets[tokenId].maxShares == 0) {
             revert AssetNotFound(tokenId);
         }
-        if (_totalShares[tokenId] + amount > _maxShares[tokenId]) {
-            revert MaxSharesExceeded(tokenId, _totalShares[tokenId], _maxShares[tokenId]);
+        if (assets[tokenId].totalShares + amount > assets[tokenId].maxShares) {
+            revert MaxSharesExceeded(tokenId, assets[tokenId].totalShares, assets[tokenId].maxShares);
         }
         if (assets[tokenId].status == AssetStatus.Fraudulent) {
             revert FraudulentAsset();
         }
 
-        _totalShares[tokenId] += amount;
+        assets[tokenId].totalShares += amount;
         _mint(to, tokenId, amount, "");
 
-        emit AssetMinted(tokenId, msg.sender, amount, uri(tokenId));
+        emit AssetMinted(tokenId, _msgSender(), amount, uri(tokenId));
     }
 
     /**
@@ -256,14 +257,14 @@ contract FractionalRWA is
         if (!isAuthorized) {
             revert BurnerRoleRequired("Caller must have BURNER_ROLE or be owner/approved for all");
         }
-        if (_maxShares[id] == 0) {
+        if (assets[id].maxShares == 0) {
             revert AssetNotFound(id);
         }
         if (assets[id].status == AssetStatus.Fraudulent) {
             revert FraudulentAsset();
         }
 
-        _totalShares[id] -= value;
+        assets[id].totalShares -= value;
         super.burn(account, id, value);
 
         emit AssetBurned(id, account);
@@ -284,14 +285,14 @@ contract FractionalRWA is
         }
 
         for (uint256 i = 0; i < ids.length; i++) {
-            if (_maxShares[ids[i]] == 0) {
+            if (assets[ids[i]].maxShares == 0) {
                 revert AssetNotFound(ids[i]);
             }
             if (assets[ids[i]].status == AssetStatus.Fraudulent) {
                 revert FraudulentAsset();
             }
 
-            _totalShares[ids[i]] -= values[i];
+            assets[ids[i]].totalShares -= values[i];
         }
 
         super.burnBatch(account, ids, values);
@@ -316,7 +317,7 @@ contract FractionalRWA is
         onlyRole(URI_SETTER_ROLE)
         whenNotPaused
     {
-        if (_maxShares[tokenId] == 0) {
+        if (assets[tokenId].maxShares == 0) {
             revert AssetNotFound(tokenId);
         }
 
@@ -335,7 +336,7 @@ contract FractionalRWA is
      * Emits an {AssetStatusUpdated} event.
      */
     function updateAssetStatus(uint256 tokenId, AssetStatus newStatus) external onlyRole(ADMIN_ROLE) whenNotPaused {
-        if (_maxShares[tokenId] == 0) {
+        if (assets[tokenId].maxShares == 0) {
             revert AssetNotFound(tokenId);
         }
         if (assets[tokenId].status == AssetStatus.Fraudulent) {
@@ -467,14 +468,14 @@ contract FractionalRWA is
      * @notice Get the total shares currently minted for a given asset tokenId.
      */
     function totalShares(uint256 tokenId) external view returns (uint256) {
-        return _totalShares[tokenId];
+        return assets[tokenId].totalShares;
     }
 
     /**
      * @notice Get the max shares cap for a given asset tokenId.
      */
     function maxShares(uint256 tokenId) external view returns (uint256) {
-        return _maxShares[tokenId];
+        return assets[tokenId].maxShares;
     }
 
     /**
